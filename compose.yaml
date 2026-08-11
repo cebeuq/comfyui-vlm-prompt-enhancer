@@ -1,0 +1,15 @@
+services:
+  test:
+    build:
+      context: .
+    platform: linux/arm64
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    network_mode: none
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 2
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,20 @@
+[project]
+name = "comfyui-vlm-prompt-enhancer"
+version = "0.1.0"
+description = "A simple ComfyUI node that enhances prompts with local multimodal models."
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+  "transformers>=5.5.0",
+  "accelerate>=1.12.0",
+  "safetensors>=0.7.0",
+  "Pillow>=11.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/cebeuq/comfyui-vlm-prompt-enhancer"
+
+[tool.comfy]
+PublisherId = "klaus-hub"
+DisplayName = "VLM Prompt Enhancer"
+Icon = ""
