@@ -196,8 +196,9 @@ Never open the description by repeating the idea sentence."""
 
 _STYLE_RULE = """STYLE SENTENCE.
 Begin the description with one short style sentence. Name the medium and the overall light.
-Pick the medium from what you can see in the reference media. A photograph is live action. A drawing is anime or illustration. A computer render is 3D.
-When there is no reference media, pick the medium that fits the idea, and say it plainly.
+Name the medium with one of these exact terms and no other: live-action cinematic, documentary, 3D render, anime, illustration, stop motion, archival footage.
+Read the medium off the reference media. A camera photograph is live-action cinematic. A hand drawing is anime or illustration. A computer render is 3D render.
+When there is no reference media, pick the medium that fits the idea.
 After the style sentence, name the subject. After the subject, write what happens."""
 
 _SENTENCE_RULE = """SENTENCES.
@@ -485,6 +486,20 @@ _FIELD_ALIASES = {
 
 
 
+# Hedging adverbs weaken a video prompt and the model reaches for them anyway.
+# Deleting a lone adverb never breaks the sentence around it.
+_HEDGE_WORDS = ("slightly", "subtly", "gently", "gradually", "somewhat", "a little", "a bit", "slight")
+
+
+def scrub_hedges(text: str) -> str:
+    """Delete hedging adverbs that the rules already forbid."""
+    import re
+
+    for word in _HEDGE_WORDS:
+        text = re.sub(rf"\b{re.escape(word)}\s+", "", text, flags=re.IGNORECASE)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
 def _strip_fences(text: str) -> str:
     lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
     return "\n".join(lines).strip()
@@ -526,6 +541,9 @@ def compile_prompt(raw: str, alignment: str = "", schema: tuple[str, ...] = _SIM
             if fields.get(spare):
                 fields[body_field] = fields.pop(spare)
                 break
+
+    for key, value in list(fields.items()):
+        fields[key] = scrub_hedges(value)
 
     body = fields.get(body_field, "").strip()
     if body and "[shot 1]" not in body.lower():

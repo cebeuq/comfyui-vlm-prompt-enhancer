@@ -181,6 +181,18 @@ class H3ModeTests(unittest.TestCase):
         compiled = compile_prompt(raw, "", field_schema("R2V"))
         self.assertIn("detailed_description: [Shot 1] She waits.", compiled)
 
+    def test_compile_strips_hedging_adverbs(self):
+        raw = "integrated_multimodal_description: [Shot 1] Her shoulders slightly shift. The light gently falls."
+        compiled = compile_prompt(raw, "")
+        self.assertIn("Her shoulders shift.", compiled)
+        self.assertIn("The light falls.", compiled)
+        self.assertNotIn("slightly", compiled)
+        self.assertNotIn("gently", compiled)
+
+    def test_style_rule_names_a_closed_vocabulary(self):
+        text = build_system_prompt("I2V", 5.0, 1, 0, False)
+        self.assertIn("live-action cinematic, documentary, 3D render", text)
+
     def test_compile_caps_length(self):
         raw = "integrated_multimodal_description: [Shot 1] " + ("word " * 5000)
         self.assertLessEqual(len(compile_prompt(raw, "")), H3_MAX_CHARS)
