@@ -10,19 +10,24 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .h3_modes import (
+    H3_MAX_REF_IMAGES,
     H3_MAX_SECONDS,
     H3_MIN_SECONDS,
     H3_TASK_OPTIONS,
     MODE_DEFAULT,
     MODE_H3,
     MODES,
+    REF_KIND_OPTIONS,
     alignment_line,
     build_system_prompt,
     build_user_message,
+    check_image_count,
     compile_prompt,
     field_schema,
+    resolve_ref_kinds,
     resolve_task,
     snap_seconds,
+    strip_reasoning,
 )
 from .media import build_messages, collect_images, tensor_to_pil_images, video_to_array
 from .model_config import MODEL_IDS, QUANTIZATIONS, resolve_model_id
@@ -107,10 +112,21 @@ def _enhance_remote(
         raise RuntimeError(f"Remote VLM returned an invalid response: {result}") from error
     if isinstance(content, list):
         content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
-    content = str(content).strip()
+    content = strip_reasoning(str(content))
     if not content:
         raise RuntimeError("Remote VLM returned an empty prompt")
     return content
+
+
+# One image at the shipped default can cost more than sixteen thousand tokens.
+# Nine reference pictures would then fill a whole context before any text.
+# 1024 * 1024 pixels is about a thousand tokens per image.
+MAX_IMAGE_PIXELS = int(os.environ.get("VLM_PROMPT_ENHANCER_MAX_PIXELS", 1024 * 1024))
+MIN_IMAGE_PIXELS = 256 * 256
+
+
+def _processor_pixel_budget() -> dict:
+    return {"min_pixels": MIN_IMAGE_PIXELS, "max_pixels": MAX_IMAGE_PIXELS}
 
 
 def _model_cache_directory() -> Path:
@@ -151,8 +167,9 @@ class VLMPromptEnhancer:
                 "custom_model_id": ("STRING", {"default": "", "placeholder": "Optional: owner/model-name"}),
                 "mode": (list(MODES), {"default": MODE_DEFAULT, "tooltip": "Default keeps the system_prompt widget. MiniMax H3 writes the system prompt for the selected H3 task."}),
                 "h3_task": (list(H3_TASK_OPTIONS), {"default": "Auto", "tooltip": "MiniMax H3 generation mode. Auto reads it from the connected references."}),
-                "h3_video_seconds": ("FLOAT", {"default": 5.0, "min": H3_MIN_SECONDS, "max": H3_MAX_SECONDS, "step": 0.5, "tooltip": "Target clip length. Sets the word budget and the first/last frame alignment mark."}),
-                "h3_anchor_first_reference": ("BOOLEAN", {"default": False, "tooltip": "Reference modes only. Bind the first reference picture to the 0.00-second mark, when it is also the opening frame."}),
+                "h3_ref_kind": (list(REF_KIND_OPTIONS), {"default": "Auto", "tooltip": "Ref2VA only. The bracketed task label H3 reads on the summary line. Auto derives it from the connected references."}),
+                "h3_video_seconds": ("INT", {"default": 5, "min": H3_MIN_SECONDS, "max": H3_MAX_SECONDS, "step": 1, "tooltip": "Target clip length in whole seconds. Sets the word budget and the alignment mark."}),
+                "h3_anchor_first_reference": ("BOOLEAN", {"default": False, "tooltip": "Ref2VA only. Bind the first reference picture to the 0.00-second mark, when it is also the opening frame."}),
                 "first_frame": ("IMAGE", {"tooltip": "MiniMax H3 mode. Becomes <Picture 1>."}),
                 "last_frame": ("IMAGE", {"tooltip": "MiniMax H3 FL2V mode. Becomes <Picture 2>."}),
                 "reference_audio": ("AUDIO", {"tooltip": "MiniMax H3 mode. Marks the task as an audio-synced variant. The audio itself is not sent to the language model."}),
@@ -220,7 +237,17 @@ class VLMPromptEnhancer:
             load_kwargs["dtype"] = "auto"
 
         try:
-            processor = AutoProcessor.from_pretrained(model_id, cache_dir=str(_model_cache_directory()))
+            try:
+                processor = AutoProcessor.from_pretrained(
+                    model_id,
+                    cache_dir=str(_model_cache_directory()),
+                    **_processor_pixel_budget(),
+                )
+            except (TypeError, ValueError):
+                # Not every image processor takes a pixel budget.
+                processor = AutoProcessor.from_pretrained(
+                    model_id, cache_dir=str(_model_cache_directory())
+                )
             model = AutoModelForMultimodalLM.from_pretrained(model_id, **load_kwargs)
         except ImportError as error:
             if quantization in {"8-bit", "4-bit NF4"}:
@@ -252,7 +279,8 @@ class VLMPromptEnhancer:
         custom_model_id="",
         mode=MODE_DEFAULT,
         h3_task="Auto",
-        h3_video_seconds=5.0,
+        h3_ref_kind="Auto",
+        h3_video_seconds=5,
         h3_anchor_first_reference=False,
         first_frame=None,
         last_frame=None,
@@ -264,19 +292,30 @@ class VLMPromptEnhancer:
         video = video_to_array(reference_video, max_video_frames) if reference_video is not None else None
         alignment = ""
         if mode == MODE_H3:
-            images = collect_images(first_frame, last_frame, reference_images)
+            images = collect_images(first_frame, last_frame, reference_images, H3_MAX_REF_IMAGES)
             has_audio = reference_audio is not None
+            video_count = 1 if video is not None else 0
+            audio_count = 1 if has_audio else 0
             task = resolve_task(h3_task, len(images), video is not None, has_audio)
+            check_image_count(task, len(images))
             seconds = snap_seconds(h3_video_seconds)
             alignment = alignment_line(task, len(images), seconds, h3_anchor_first_reference)
             schema = field_schema(task)
+            ref_kinds = ""
+            if task == "Ref2VA":
+                ref_kinds = resolve_ref_kinds(
+                    h3_ref_kind,
+                    len(images),
+                    video is not None,
+                    has_audio,
+                    first_frame is not None or last_frame is not None,
+                )
             system_prompt = build_system_prompt(
-                task, seconds, len(images), 1 if video is not None else 0, has_audio, alignment
+                task, seconds, len(images), video_count, audio_count, alignment, ref_kinds
             )
-            user_message = build_user_message(
-                prompt, task, len(images), 1 if video is not None else 0, has_audio
-            )
-            max_new_tokens = max(int(max_new_tokens), int(seconds * 14 * 2.2) + 192)
+            user_message = build_user_message(prompt, task, len(images), video_count, audio_count)
+            words = 500 if task == "Ref2VA" else seconds * 14
+            max_new_tokens = max(int(max_new_tokens), int(words * 2.2) + 192)
         else:
             images = []
             if first_frame is not None or last_frame is not None:
@@ -321,10 +360,19 @@ class VLMPromptEnhancer:
             "return_dict": True,
             "return_tensors": "pt",
         }
+        if len(images) > 1:
+            # Qwen's template only writes "Picture N:" before each image when
+            # this flag is set, and the H3 prompt binds references by number.
+            template_kwargs["add_vision_id"] = True
         try:
             inputs = processor.apply_chat_template(messages, enable_thinking=False, **template_kwargs)
         except TypeError:
-            # Some compatible custom processors do not expose a thinking switch.
+            # Some compatible custom processors expose neither a thinking
+            # switch nor image numbering.
+            template_kwargs.pop("add_vision_id", None)
+            inputs = processor.apply_chat_template(messages, enable_thinking=False, **template_kwargs)
+        except ValueError:
+            template_kwargs.pop("add_vision_id", None)
             inputs = processor.apply_chat_template(messages, **template_kwargs)
         input_length = inputs["input_ids"].shape[-1]
         target_device = next(loaded_model.parameters()).device
@@ -344,7 +392,7 @@ class VLMPromptEnhancer:
         try:
             with torch.inference_mode():
                 output = loaded_model.generate(**inputs, **generation_kwargs)
-            result = processor.decode(output[0][input_length:], skip_special_tokens=True).strip()
+            result = strip_reasoning(processor.decode(output[0][input_length:], skip_special_tokens=True))
         finally:
             if unload_after_run:
                 self._unload()

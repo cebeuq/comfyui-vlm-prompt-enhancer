@@ -22,7 +22,7 @@ The node downloads the selected model from Hugging Face on its first run. It cac
 - Auto/BF16, FP16, 8-bit, and 4-bit NF4 loading
 - Optional ComfyUI `IMAGE` batch and native `VIDEO` reference inputs
 - A `mode` switch: `Default` keeps the free-text system prompt, `MiniMax H3` writes one for you
-- MiniMax H3 task modes: T2V, I2V, FL2V, R2V, V2V, and the audio-synced I2VA, R2VA, and V2VA
+- MiniMax H3 task modes under MiniMax's own names: T2VA, I2VA, L2VA, FL2VA, and Ref2VA
 - System prompt, output length, temperature, top-p, seed, and video-frame controls
 - Two `STRING` outputs: the enhanced prompt, and the system prompt that was used
 
@@ -56,31 +56,39 @@ Restart ComfyUI. Add **VLM Prompt Enhancer** from **text → prompting**.
 
 ## MiniMax H3 mode
 
-MiniMax H3 is an open-weights video model. It does not read a free-form
-sentence. It reads a small set of named fields, and it binds a reference
-picture to a subject or to a point in time through inline tags such as
-`<Picture 1>`.
+MiniMax H3 is an open-weights video model. It always produces audio with the
+video, which is why every mode name below ends in A. H3 does not read a
+free-form sentence. It reads a small set of named fields, and it binds a
+reference picture to a subject or to a point in time through inline tags such
+as `<Picture 1>`.
+
+MiniMax runs a hosted prompt-enrichment service, H3-Context-IR, that turns a
+short idea into that field layout. It is not part of the open release. This
+mode is the local stand-in for it.
 
 Set `mode` to `MiniMax H3` and the node stops using the `system_prompt`
 widget. It builds the system prompt itself, from the task you choose and from
-the references you connected, and it repairs the model's answer into the exact
-field layout H3 expects.
+the references you connected, writes the alignment line for you, and repairs
+the model's answer into the exact field layout H3 expects.
 
 ### Tasks
 
 | Task | Meaning | Pictures | What the picture fixes |
 | --- | --- | --- | --- |
-| `T2V` | Text to video | 0 | Nothing. The prompt carries everything. |
-| `I2V` | Image to video | 1 | The exact first frame. |
-| `FL2V` | First and last frame to video | 2 | The exact first frame and the exact last frame. |
-| `R2V` | Reference to video | 1 to 9 | Subject identity only, not timing or framing. |
-| `V2V` | Video to video | 0 to 3 | A reference video fixes motion and pacing. |
-| `I2VA`, `R2VA`, `V2VA` | The same three, with a reference sound or voice track | as above | as above, plus lip and body sync. |
+| `T2VA` | Text to video | 0 | Nothing. The prompt carries everything. |
+| `I2VA` | Image to video | 1 | The exact first frame. |
+| `L2VA` | Last frame to video | 1 | The exact last frame. The opening is invented. |
+| `FL2VA` | First and last frame to video | 2 | Both ends of one continuous shot. |
+| `Ref2VA` | Reference to video | 0 to 9 | Subject identity only, not timing or framing. Also takes reference video and reference audio. |
 
 `h3_task` defaults to `Auto`. Auto reads the task from what you connected: no
-reference is `T2V`, one picture is `I2V`, two pictures are `FL2V`, three or
-more are `R2V`, a connected `reference_video` is `V2V`, and a connected
-`reference_audio` selects the audio-synced variant.
+reference is `T2VA`, one picture is `I2VA`, two pictures are `FL2VA`, and three
+or more pictures, or any reference video or audio, is `Ref2VA`. Pick `L2VA`
+by hand, because one picture cannot say by itself whether it is the first
+frame or the last one.
+
+The older widget values `T2V`, `I2V`, `FL2V`, `R2V`, `V2V`, `V2VA`, and `R2VA`
+still load. They map onto the names above, so saved workflows keep working.
 
 ### Picture order
 
@@ -91,25 +99,37 @@ this fixed order:
 2. `last_frame` becomes the next picture.
 3. `reference_images` fills the remaining slots, in batch order.
 
-Wire `first_frame` and `last_frame` for `I2V` and `FL2V`. Wire a batch into
-`reference_images` for `R2V`.
+Wire `first_frame` for `I2VA`, `first_frame` and `last_frame` for `FL2VA`, and
+a batch into `reference_images` for `Ref2VA`. The node refuses a picture count
+the task cannot use, rather than silently sending the wrong number.
 
 ### Alignment line
 
 H3 binds a picture to a moment with a fixed sentence at the top of the prompt.
 The node writes that line itself, because a small model cannot be trusted to
-copy a fixed string and a formatted number without drift. `I2V` gets the
-zero-second binding. `FL2V` gets a two-mark binding built from
-`h3_video_seconds`. `R2V` gets no binding line unless you switch on
-`h3_anchor_first_reference`, which you should do only when the first reference
-picture is also the opening frame.
+copy a fixed string and a formatted number without drift. MiniMax words the
+line differently for each mode, and those differences are reproduced exactly:
+`I2VA` gets the zero-second binding, `L2VA` and `FL2VA` get mark-based
+bindings built from `h3_video_seconds`. `Ref2VA` gets no binding line unless
+you switch on `h3_anchor_first_reference`, which you should do only when the
+first reference picture is also the opening frame.
+
+### Reference task label
+
+`Ref2VA` prompts carry a bracketed label on the `summary` line that tells H3
+what kind of reference job this is. `h3_ref_kind` defaults to `Auto`, which
+derives the label from the connected references. A reference video that only
+supplies camera work or rhythm stays `reference generation`; pick
+`video editing` by hand when you actually mean it.
 
 ### Length
 
-`h3_video_seconds` sets the clip length. It drives the word budget, the
-coverage checklist, and the second mark in the `FL2V` alignment line. H3 was
-trained between about 2 and 15 seconds at 24 frames per second. In H3 mode the
-node also raises `max_new_tokens` on its own when the budget needs more room.
+`h3_video_seconds` sets the clip length in whole seconds. The cloud endpoint
+accepts 4 to 15, and the ComfyUI nodes snap the frame count to a 17k+5 grid at
+24 frames per second. The value drives the word budget, the coverage
+checklist, and the mark in the `L2VA` and `FL2VA` alignment lines. `Ref2VA`
+carries MiniMax's longer 350 to 500 word budget. In H3 mode the node raises
+`max_new_tokens` on its own when the budget needs more room.
 
 ### Why there are no examples in the built-in prompts
 
@@ -122,7 +142,20 @@ prompt neutral keeps the output driven by your idea and your references.
 `system_prompt_used` returns the exact text that was sent, so you can read what
 the model was told.
 
-Set temperature to `0` for deterministic greedy generation. Enable `unload_after_run` when VRAM is limited. The default keeps one model loaded for faster later runs. Selecting a different model or quantization unloads the old model.
+## Vision and reasoning notes
+
+Multi-image runs pass `add_vision_id` to the chat template, so the template
+writes `Picture N:` before each image. Without it the model cannot tell which
+picture is which, and every `<Picture N>` binding becomes a guess.
+
+Each image is capped at about one million pixels, which is roughly a thousand
+tokens. The shipped Qwen defaults allow far more, and nine reference pictures
+at that setting fill a whole context before any text. Override it with
+`VLM_PROMPT_ENHANCER_MAX_PIXELS` if you need finer detail.
+
+Recent Qwen models think by default. The node asks for thinking to be turned
+off, and it also strips a leaked `<think>` block from the answer, because an
+OpenAI-compatible proxy does not always honour that request.
 
 ## Model access and disk use
 
