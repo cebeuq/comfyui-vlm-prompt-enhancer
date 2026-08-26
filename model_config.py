@@ -13,6 +13,8 @@ MODEL_CHOICES = (
     ModelChoice("Qwen 3.5 4B", "Qwen/Qwen3.5-4B"),
     ModelChoice("Qwen 3.5 9B", "Qwen/Qwen3.5-9B"),
     ModelChoice("Qwen 3.5 27B", "Qwen/Qwen3.5-27B"),
+    ModelChoice("Qwen 3.8 27B", "Qwen/Qwen3.8-27B"),
+    ModelChoice("Qwen 3.8 27B FP8", "Qwen/Qwen3.8-27B-FP8"),
     ModelChoice("Gemma 4 E2B Instruct", "google/gemma-4-E2B-it"),
     ModelChoice("Gemma 4 E4B Instruct", "google/gemma-4-E4B-it"),
     ModelChoice("Gemma 4 12B Instruct", "google/gemma-4-12B-it"),

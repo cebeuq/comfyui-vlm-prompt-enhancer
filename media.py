@@ -48,3 +48,20 @@ def build_messages(system_prompt: str, prompt: str, images=None, video=None) -> 
         messages.append({"role": "system", "content": system_prompt.strip()})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def collect_images(first_frame=None, last_frame=None, reference_images=None, maximum: int = 9):
+    """Order the reference pictures the way MiniMax H3 numbers them.
+
+    Slot order is fixed: the first-frame input becomes <Picture 1>, the
+    last-frame input becomes the next picture, and the reference batch fills
+    the remaining slots in its own order.
+    """
+    output = []
+    for tensor, count in ((first_frame, 1), (last_frame, 1)):
+        if tensor is None:
+            continue
+        output.extend(tensor_to_pil_images(tensor, count))
+    if reference_images is not None and len(output) < maximum:
+        output.extend(tensor_to_pil_images(reference_images, maximum - len(output)))
+    return output[:maximum]

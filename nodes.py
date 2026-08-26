@@ -9,7 +9,22 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .media import build_messages, tensor_to_pil_images, video_to_array
+from .h3_modes import (
+    H3_MAX_SECONDS,
+    H3_MIN_SECONDS,
+    H3_TASK_OPTIONS,
+    MODE_DEFAULT,
+    MODE_H3,
+    MODES,
+    alignment_line,
+    build_system_prompt,
+    build_user_message,
+    compile_prompt,
+    field_schema,
+    resolve_task,
+    snap_seconds,
+)
+from .media import build_messages, collect_images, tensor_to_pil_images, video_to_array
 from .model_config import MODEL_IDS, QUANTIZATIONS, resolve_model_id
 
 
@@ -134,15 +149,25 @@ class VLMPromptEnhancer:
                 "reference_images": ("IMAGE",),
                 "reference_video": ("VIDEO",),
                 "custom_model_id": ("STRING", {"default": "", "placeholder": "Optional: owner/model-name"}),
+                "mode": (list(MODES), {"default": MODE_DEFAULT, "tooltip": "Default keeps the system_prompt widget. MiniMax H3 writes the system prompt for the selected H3 task."}),
+                "h3_task": (list(H3_TASK_OPTIONS), {"default": "Auto", "tooltip": "MiniMax H3 generation mode. Auto reads it from the connected references."}),
+                "h3_video_seconds": ("FLOAT", {"default": 5.0, "min": H3_MIN_SECONDS, "max": H3_MAX_SECONDS, "step": 0.5, "tooltip": "Target clip length. Sets the word budget and the first/last frame alignment mark."}),
+                "h3_anchor_first_reference": ("BOOLEAN", {"default": False, "tooltip": "Reference modes only. Bind the first reference picture to the 0.00-second mark, when it is also the opening frame."}),
+                "first_frame": ("IMAGE", {"tooltip": "MiniMax H3 mode. Becomes <Picture 1>."}),
+                "last_frame": ("IMAGE", {"tooltip": "MiniMax H3 FL2V mode. Becomes <Picture 2>."}),
+                "reference_audio": ("AUDIO", {"tooltip": "MiniMax H3 mode. Marks the task as an audio-synced variant. The audio itself is not sent to the language model."}),
             },
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("enhanced_prompt",)
-    OUTPUT_TOOLTIPS = ("The enhanced prompt, ready for a text encoder or prompt node.",)
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("enhanced_prompt", "system_prompt_used")
+    OUTPUT_TOOLTIPS = (
+        "The enhanced prompt, ready for a text encoder or prompt node.",
+        "The system prompt that was actually sent, for inspection.",
+    )
     FUNCTION = "enhance"
     CATEGORY = "text/prompting"
-    DESCRIPTION = "Enhance a prompt with the configured remote VLM or a local Hugging Face model."
+    DESCRIPTION = "Enhance a prompt with the configured remote VLM or a local Hugging Face model, with an optional MiniMax H3 mode that writes the system prompt for you."
 
     @classmethod
     def _unload(cls):
@@ -225,12 +250,41 @@ class VLMPromptEnhancer:
         reference_images=None,
         reference_video=None,
         custom_model_id="",
+        mode=MODE_DEFAULT,
+        h3_task="Auto",
+        h3_video_seconds=5.0,
+        h3_anchor_first_reference=False,
+        first_frame=None,
+        last_frame=None,
+        reference_audio=None,
     ):
         if not prompt.strip():
             raise ValueError("prompt cannot be empty")
 
-        images = tensor_to_pil_images(reference_images) if reference_images is not None else []
         video = video_to_array(reference_video, max_video_frames) if reference_video is not None else None
+        alignment = ""
+        if mode == MODE_H3:
+            images = collect_images(first_frame, last_frame, reference_images)
+            has_audio = reference_audio is not None
+            task = resolve_task(h3_task, len(images), video is not None, has_audio)
+            seconds = snap_seconds(h3_video_seconds)
+            alignment = alignment_line(task, len(images), seconds, h3_anchor_first_reference)
+            schema = field_schema(task)
+            system_prompt = build_system_prompt(
+                task, seconds, len(images), 1 if video is not None else 0, has_audio, alignment
+            )
+            user_message = build_user_message(
+                prompt, task, len(images), 1 if video is not None else 0, has_audio
+            )
+            max_new_tokens = max(int(max_new_tokens), int(seconds * 14 * 2.2) + 192)
+        else:
+            images = []
+            if first_frame is not None or last_frame is not None:
+                images = collect_images(first_frame, last_frame, reference_images)
+            elif reference_images is not None:
+                images = tensor_to_pil_images(reference_images)
+            user_message = prompt.strip()
+
         remote_base_url = os.environ.get("VLM_PROMPT_ENHANCER_BASE_URL", "").strip()
         if remote_base_url:
             remote_model = os.environ.get("VLM_PROMPT_ENHANCER_MODEL", "").strip()
@@ -243,7 +297,7 @@ class VLMPromptEnhancer:
                 remote_model,
                 (os.environ.get("VLM_PROMPT_ENHANCER_API_KEY") or os.environ.get("LLAMA_API_KEY") or "").strip(),
                 system_prompt,
-                prompt.strip(),
+                user_message,
                 images,
                 video,
                 max_new_tokens,
@@ -251,14 +305,16 @@ class VLMPromptEnhancer:
                 top_p,
                 seed,
             )
-            return (result,)
+            if mode == MODE_H3:
+                result = compile_prompt(result, alignment, schema)
+            return (result, system_prompt)
 
         import torch
 
         model_id = resolve_model_id(model, custom_model_id)
         loaded_model, processor = self._load(model_id, quantization)
 
-        messages = build_messages(system_prompt, prompt.strip(), images, video)
+        messages = build_messages(system_prompt, user_message, images, video)
         template_kwargs = {
             "add_generation_prompt": True,
             "tokenize": True,
@@ -293,7 +349,9 @@ class VLMPromptEnhancer:
             if unload_after_run:
                 self._unload()
 
-        return (result,)
+        if mode == MODE_H3:
+            result = compile_prompt(result, alignment, schema)
+        return (result, system_prompt)
 
 
 NODE_CLASS_MAPPINGS = {"VLMPromptEnhancer": VLMPromptEnhancer}
