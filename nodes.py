@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import base64
 import gc
+import json
 import os
+from io import BytesIO
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .media import build_messages, tensor_to_pil_images, video_to_array
 from .model_config import MODEL_IDS, QUANTIZATIONS, resolve_model_id
@@ -11,6 +16,86 @@ from .model_config import MODEL_IDS, QUANTIZATIONS, resolve_model_id
 DEFAULT_SYSTEM_PROMPT = """You improve prompts for image and video generation.
 Preserve the user's intent. Use the references to add accurate visual details.
 Return only the improved prompt. Do not add a preface, notes, or quotation marks."""
+
+
+def _pil_data_url(image) -> str:
+    buffer = BytesIO()
+    image.convert("RGB").save(buffer, format="JPEG", quality=90)
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _remote_messages(system_prompt: str, prompt: str, images, video) -> list[dict]:
+    from PIL import Image
+
+    content = []
+    for image in images:
+        content.append({"type": "image_url", "image_url": {"url": _pil_data_url(image)}})
+    if video is not None:
+        for frame in video:
+            content.append(
+                {"type": "image_url", "image_url": {"url": _pil_data_url(Image.fromarray(frame))}}
+            )
+    content.append({"type": "text", "text": prompt})
+
+    messages = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
+    messages.append({"role": "user", "content": content})
+    return messages
+
+
+def _enhance_remote(
+    base_url: str,
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    prompt: str,
+    images,
+    video,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+    seed: int,
+) -> str:
+    payload = {
+        "model": model,
+        "messages": _remote_messages(system_prompt, prompt, images, video),
+        "max_tokens": max_new_tokens,
+        "temperature": temperature,
+        "top_p": top_p,
+        "seed": seed,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = Request(
+        f"{base_url.rstrip('/')}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    timeout = float(os.environ.get("VLM_PROMPT_ENHANCER_TIMEOUT", "600"))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            result = json.load(response)
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Remote VLM request failed with HTTP {error.code}: {detail}") from error
+    except URLError as error:
+        raise RuntimeError(f"Remote VLM endpoint is unavailable: {error.reason}") from error
+
+    try:
+        content = result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise RuntimeError(f"Remote VLM returned an invalid response: {result}") from error
+    if isinstance(content, list):
+        content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
+    content = str(content).strip()
+    if not content:
+        raise RuntimeError("Remote VLM returned an empty prompt")
+    return content
 
 
 def _model_cache_directory() -> Path:
@@ -57,7 +142,7 @@ class VLMPromptEnhancer:
     OUTPUT_TOOLTIPS = ("The enhanced prompt, ready for a text encoder or prompt node.",)
     FUNCTION = "enhance"
     CATEGORY = "text/prompting"
-    DESCRIPTION = "Enhance a prompt with a local Hugging Face vision-language model and optional image or video references."
+    DESCRIPTION = "Enhance a prompt with the configured remote VLM or a local Hugging Face model."
 
     @classmethod
     def _unload(cls):
@@ -144,13 +229,35 @@ class VLMPromptEnhancer:
         if not prompt.strip():
             raise ValueError("prompt cannot be empty")
 
+        images = tensor_to_pil_images(reference_images) if reference_images is not None else []
+        video = video_to_array(reference_video, max_video_frames) if reference_video is not None else None
+        remote_base_url = os.environ.get("VLM_PROMPT_ENHANCER_BASE_URL", "").strip()
+        if remote_base_url:
+            remote_model = os.environ.get("VLM_PROMPT_ENHANCER_MODEL", "").strip()
+            if not remote_model:
+                raise RuntimeError(
+                    "VLM_PROMPT_ENHANCER_MODEL is required when VLM_PROMPT_ENHANCER_BASE_URL is set"
+                )
+            result = _enhance_remote(
+                remote_base_url,
+                remote_model,
+                (os.environ.get("VLM_PROMPT_ENHANCER_API_KEY") or os.environ.get("LLAMA_API_KEY") or "").strip(),
+                system_prompt,
+                prompt.strip(),
+                images,
+                video,
+                max_new_tokens,
+                temperature,
+                top_p,
+                seed,
+            )
+            return (result,)
+
         import torch
 
         model_id = resolve_model_id(model, custom_model_id)
         loaded_model, processor = self._load(model_id, quantization)
 
-        images = tensor_to_pil_images(reference_images) if reference_images is not None else []
-        video = video_to_array(reference_video, max_video_frames) if reference_video is not None else None
         messages = build_messages(system_prompt, prompt.strip(), images, video)
         template_kwargs = {
             "add_generation_prompt": True,

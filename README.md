@@ -2,6 +2,15 @@
 
 A single ComfyUI node that uses a local vision-language model to improve an image or video generation prompt.
 
+## Remote OpenAI-compatible endpoint
+
+When `VLM_PROMPT_ENHANCER_BASE_URL` and `VLM_PROMPT_ENHANCER_MODEL` are set,
+the node sends prompt and reference media to that endpoint instead of loading a
+Hugging Face model in ComfyUI. `VLM_PROMPT_ENHANCER_API_KEY` is optional, and
+`VLM_PROMPT_ENHANCER_TIMEOUT` defaults to 600 seconds. Existing workflows keep
+the same node inputs; the configured remote model overrides the local model and
+quantization selectors.
+
 The node downloads the selected model from Hugging Face on its first run. It caches files in `ComfyUI/models/vlm_prompt_enhancer`. Later runs use the local copy.
 
 ## Features
