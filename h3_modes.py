@@ -253,12 +253,16 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
         )
         return "\n".join(lines)
 
-    lines.append(
-        f"{image_count} picture(s) are attached, in order. "
-        "The first attached picture is <Picture 1>, the second is <Picture 2>, and so on."
-        if image_count
-        else "No picture is attached."
-    )
+    if image_count == 1:
+        lines.append("One picture is attached. It is <Picture 1>.")
+    elif image_count > 1:
+        names = ", ".join(f"<Picture {index + 1}>" for index in range(image_count))
+        lines.append(
+            f"{image_count} pictures are attached, in order. They are {names}. "
+            "The order you are shown them in is the order of those numbers."
+        )
+    else:
+        lines.append("No picture is attached.")
 
     if task in {"I2V", "I2VA"}:
         lines.append("<Picture 1> is the exact first frame of the video. The video starts inside it.")
@@ -355,11 +359,33 @@ _COVERAGE = (
 )
 
 
+# Word and sentence budgets that hold up in practice, per clip length.
+# Between the anchors the budget is interpolated.
+_BUDGET_ANCHORS = ((2.0, 40, 4), (5.0, 75, 5), (8.0, 120, 10), (10.0, 160, 13), (15.0, 210, 16))
+
+
+def budget_for(seconds: float) -> tuple[int, int]:
+    """Return the word count and the sentence count for a duration."""
+    value = snap_seconds(seconds)
+    previous = _BUDGET_ANCHORS[0]
+    for anchor in _BUDGET_ANCHORS:
+        if value <= anchor[0]:
+            if anchor[0] == previous[0]:
+                return anchor[1], anchor[2]
+            span = anchor[0] - previous[0]
+            share = (value - previous[0]) / span
+            words = previous[1] + (anchor[1] - previous[1]) * share
+            sentences = previous[2] + (anchor[2] - previous[2]) * share
+            return int(round(words)), int(round(sentences))
+        previous = anchor
+    return _BUDGET_ANCHORS[-1][1], _BUDGET_ANCHORS[-1][2]
+
+
 def _length_block(seconds: float) -> str:
     """Build the word and coverage budget for a duration."""
     value = snap_seconds(seconds)
-    words = int(round(value * 14))
-    sentences = max(5, min(len(_COVERAGE), int(round(value * 1.1)) + 3))
+    words, sentences = budget_for(value)
+    sentences = max(2, min(len(_COVERAGE), sentences))
     frames = int(round(value * H3_FPS))
     covered = _COVERAGE[: sentences - 1] + (_COVERAGE[-1],)
     checklist = "; ".join(covered)

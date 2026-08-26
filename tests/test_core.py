@@ -105,8 +105,15 @@ class H3ModeTests(unittest.TestCase):
     def test_length_budget_scales_with_duration(self):
         short = build_system_prompt("T2V", 2.0, 0, 0, False)
         long = build_system_prompt("T2V", 15.0, 0, 0, False)
-        self.assertIn("about 28 words", short)
+        self.assertIn("about 40 words", short)
         self.assertIn("about 210 words", long)
+
+    def test_picture_slots_are_named_grammatically(self):
+        one = build_system_prompt("I2V", 5.0, 1, 0, False)
+        self.assertIn("One picture is attached. It is <Picture 1>.", one)
+        three = build_system_prompt("R2V", 5.0, 3, 0, False)
+        self.assertIn("3 pictures are attached", three)
+        self.assertIn("<Picture 3>", three)
 
     def test_user_message_lists_available_tags(self):
         message = build_user_message("a cat", "R2V", 2, 1, True)
