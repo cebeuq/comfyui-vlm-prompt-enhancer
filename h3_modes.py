@@ -238,6 +238,7 @@ Copy the square brackets and the tag exactly. The words start with a capital let
 Build the whole spoken passage in this shape, and replace only the capitalised parts:
 HIS OR HER jaw and lips move clearly through every word, and the SPEAKER with a VOICE QUALITY voice (S1) says: <d>[English] THE WORDS.</d> He closes his lips and ONE ACTION.
 Use (S1) for the first speaker and (S2) for a second speaker.
+The capitals in that shape only mark the parts you replace. Write the finished sentence in ordinary sentence case, and never copy a capitalised placeholder into your answer.
 Never summarise, hint at, or repeat the spoken words anywhere else."""
 
 _SOUND_RULE = """SOUND FIELDS.
@@ -285,7 +286,8 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
         )
         lines.append(
             "The binding line above your answer already ties the picture to the video. Never write the "
-            "tag <Picture 1> inside a field, and never say that the subject is shown or seen anywhere."
+            "tag <Picture 1> inside a field. Never write that the subject is shown, seen, visible, or "
+            "pictured, and never write we see or there is. Write what the subject does."
         )
     elif task == "FL2V":
         lines.append("<Picture 1> is the exact first frame. <Picture 2> is the exact last frame.")
@@ -304,7 +306,8 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
         lines.append("Never describe the two pictures as two separate states side by side. Describe the change between them.")
         lines.append(
             "The binding line above your answer already ties both pictures to the video. Never write the "
-            "tag <Picture 1> or <Picture 2> inside a field, and never say that the subject is shown or seen anywhere."
+            "tag <Picture 1> or <Picture 2> inside a field. Never write that the subject is shown, seen, "
+            "visible, or pictured, and never write we see or there is. Write what the subject does."
         )
     elif task in {"R2V", "R2VA"}:
         lines.append(
@@ -312,9 +315,9 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
             "fix a moment in time and it does not fix the framing."
         )
         lines.append(
-            "In subject_definitions, write one sentence for each picture. Each sentence starts with that "
-            "picture's tag, then the word is, then a plain description of that subject. Use this shape and "
-            "replace only the capitalised parts: <Picture N> is A PLAIN DESCRIPTION OF THAT SUBJECT."
+            "In subject_definitions, write one sentence for each picture. Start the sentence with that "
+            "picture's tag, then the word is, then describe that subject in your own words: what kind of "
+            "thing it is, and what it looks like. Write it in ordinary sentence case."
         )
         lines.append(
             "In the timeline, name the subject as a normal noun phrase and put its tag straight after that "
@@ -322,8 +325,9 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
             "inline tag. A subject with no tag loses its identity. Never fuse the tag onto a word."
         )
         lines.append(
-            "State once in retention_analysis that the subject keeps the same face, hair, and clothing as "
-            "its picture throughout the video."
+            "In retention_analysis, name the exact traits that must not drift: the face, the hair colour and "
+            "length, each piece of clothing, and the shape of any object. Name them. Do not write a general "
+            "promise that things stay the same."
         )
         lines.append(
             "The pictures do not fix the setting. Build the setting, the light, and the action from "
