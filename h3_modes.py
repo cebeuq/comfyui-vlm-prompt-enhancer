@@ -602,7 +602,7 @@ _FIELD_ALIASES = {
 # Hedging adverbs weaken a video prompt and a model reaches for them anyway.
 # Deleting a lone adverb never breaks the sentence around it. "slightly" is
 # handled apart, because "Shake Slightly" is an official camera term.
-_HEDGE_WORDS = ("subtly", "gently", "gradually", "somewhat", "a little", "a bit")
+_HEDGE_WORDS = ("subtly", "gently", "gradually", "somewhat", "a little", "a bit", "slight")
 _HEDGE_SLIGHT = re.compile(r"(?<!shake )\bslightly\s+", re.IGNORECASE)
 _THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
 
@@ -621,6 +621,27 @@ def scrub_hedges(text: str) -> str:
         text = re.sub(rf"\b{re.escape(word)}\s+", "", text, flags=re.IGNORECASE)
     text = _HEDGE_SLIGHT.sub("", text)
     return re.sub(r"[ \t]{2,}", " ", text)
+
+
+# MiniMax writes a subject label in angle brackets, and separates a retention
+# marker from its detail with a spaced hyphen. Small models drop both.
+_BARE_SUBJECT = re.compile(r"(?<![<\w])Subject (\d+)")
+_RETENTION_MARKERS = (
+    "fully_preserved",
+    "partially_preserved",
+    "attribute_transfer",
+    "weak_reference",
+    "fully_copy",
+    "partially_copy",
+)
+
+
+def repair_reference_labels(text: str) -> str:
+    """Restore the angle brackets and marker spacing H3 expects."""
+    text = _BARE_SUBJECT.sub(r"<Subject \1>", text)
+    for marker in _RETENTION_MARKERS:
+        text = re.sub(rf"\b{marker}\s*-\s*", f"{marker} - ", text)
+    return text
 
 
 def _strip_fences(text: str) -> str:
@@ -665,8 +686,12 @@ def compile_prompt(raw: str, alignment: str = "", schema: tuple[str, ...] = _SIM
                 fields[body_field] = fields.pop(spare)
                 break
 
+    reference_schema = "subject_definitions" in schema
     for key, value in list(fields.items()):
-        fields[key] = scrub_hedges(value)
+        value = scrub_hedges(value)
+        if reference_schema:
+            value = repair_reference_labels(value)
+        fields[key] = value
 
     body = fields.get(body_field, "").strip()
     if body and "[shot 1]" not in body.lower():

@@ -14,6 +14,7 @@ from h3_modes import (
     field_schema,
     resolve_ref_kinds,
     resolve_task,
+    repair_reference_labels,
     scrub_hedges,
     snap_seconds,
     strip_reasoning,
@@ -263,6 +264,26 @@ class H3ModeTests(unittest.TestCase):
     def test_style_rule_names_a_closed_vocabulary(self):
         text = build_system_prompt("I2VA", 5, 1)
         self.assertIn("live-action cinematic, documentary, 3D render", text)
+
+    def test_reference_labels_are_repaired(self):
+        raw = (
+            "subject_definitions: Subject 1 is a person.\n"
+            "retention_analysis: Subject 1 (<Picture 1>): fully_preserved-face and hair.\n"
+            "detailed_description: The person Subject 1 waits.\n"
+            "overall_soundscape: room tone\n"
+            "non_diegetic_music: N/A"
+        )
+        compiled = compile_prompt(raw, "", field_schema("Ref2VA"))
+        self.assertIn("<Subject 1> is a person.", compiled)
+        self.assertIn("fully_preserved - face and hair.", compiled)
+        self.assertIn("The person <Subject 1> waits.", compiled)
+
+    def test_repair_leaves_an_existing_label_alone(self):
+        self.assertEqual(repair_reference_labels("<Subject 2> moves."), "<Subject 2> moves.")
+
+    def test_simple_schema_is_left_unrepaired(self):
+        raw = "integrated_multimodal_description: [Shot 1] Subject 1 waits."
+        self.assertIn("Subject 1 waits", compile_prompt(raw, ""))
 
     def test_compile_caps_length_without_losing_the_sound_fields(self):
         raw = (
