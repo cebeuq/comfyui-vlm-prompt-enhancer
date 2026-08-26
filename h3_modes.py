@@ -175,6 +175,7 @@ _FIELD_HELP = {
 def _output_contract(schema: tuple[str, ...]) -> str:
     shape = "\n\n".join(f"{name}: {_FIELD_HELP[name]}" for name in schema)
     last = schema[-1]
+    count = len(schema)
     return f"""OUTPUT SHAPE.
 Your whole answer is these {len(schema)} fields, in this order, and nothing else:
 
@@ -186,7 +187,13 @@ Never write a heading, a title, a bullet, a number list, a code fence, or quotat
 Never write a greeting, a preface, a note, or a closing remark. Write nothing outside the fields.
 Never repeat these instructions back.
 Your answer ends at the end of the {last} line.
-Write in English only. Never write Chinese characters."""
+Write in English only. Never write Chinese characters.
+
+FIELD NAMES.
+Every field begins with its exact name, then a colon, then a space. Type the name even when the field is short.
+Your answer contains all {count} field names, each one time, in the order above.
+Never merge two fields into one. Never let the content of one field run on at the end of another field.
+Never leave a field out. A field with nothing to say still gets its name, followed by N/A."""
 
 _VIEWER_RULES = """WHAT THE VIEWER SEES.
 Write only what a viewer can see or hear. Never write a smell, a taste, an emotion, or a thought.
@@ -207,10 +214,10 @@ Use plain, direct language. Do not use poetic or abstract words.
 Describe one thing at a time."""
 
 _CAMERA_RULE = """CAMERA.
-Write camera movement inside a sentence, in lower case, as something the camera does.
+Write camera movement as something the camera does, inside a full sentence. Capitalise that sentence like any other.
 Never write camera words as a tag list at the end.
 Use at most two camera movements in the whole description.
-Use only these movements: zoom in, zoom out, push in, pull out, pan left, pan right, tilt up, tilt down, truck left, truck right, tracking shot, and a held static camera.
+Use only these movements, and copy the wording exactly: zooms in, zooms out, pushes in, pulls out, pans left, pans right, tilts up, tilts down, trucks left, trucks right, tracks forward, tracks backward, holds still.
 Every camera movement ends with an amplitude phrase and then a speed phrase, in this exact wording: "with small amplitude at slow speed", "with small amplitude at fast speed", "with large amplitude at slow speed", or "with large amplitude at fast speed".
 A calm scene takes small amplitude and slow speed. Only a genuinely energetic scene takes large amplitude or fast speed.
 These words are banned everywhere: slightly, subtly, gently, a little, gradually, somewhat."""
@@ -276,6 +283,10 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
             "Appearance is already fixed by the picture, so spend your words on movement, on physics, "
             "and on what changes over time."
         )
+        lines.append(
+            "The binding line above your answer already ties the picture to the video. Never write the "
+            "tag <Picture 1> inside a field, and never say that the subject is shown or seen anywhere."
+        )
     elif task == "FL2V":
         lines.append("<Picture 1> is the exact first frame. <Picture 2> is the exact last frame.")
         lines.append("They are the two ends of one continuous shot. They are not two scenes.")
@@ -291,19 +302,28 @@ def _slot_block(task: str, image_count: int, video_count: int, has_audio: bool) 
             "the other while the viewer watches."
         )
         lines.append("Never describe the two pictures as two separate states side by side. Describe the change between them.")
+        lines.append(
+            "The binding line above your answer already ties both pictures to the video. Never write the "
+            "tag <Picture 1> or <Picture 2> inside a field, and never say that the subject is shown or seen anywhere."
+        )
     elif task in {"R2V", "R2VA"}:
         lines.append(
             "Each attached picture is an identity anchor. It fixes how a subject looks. It does not "
             "fix a moment in time and it does not fix the framing."
         )
         lines.append(
-            "Write the tag <Picture N> inside your sentences, next to the subject it belongs to. "
-            "H3 binds a reference to a subject only through that inline tag. A subject with no tag "
-            "loses its identity."
+            "In subject_definitions, write one sentence for each picture. Each sentence starts with that "
+            "picture's tag, then the word is, then a plain description of that subject. Use this shape and "
+            "replace only the capitalised parts: <Picture N> is A PLAIN DESCRIPTION OF THAT SUBJECT."
         )
         lines.append(
-            "State once that the subject keeps the same face, hair, and clothing as its picture "
-            "throughout the video."
+            "In the timeline, name the subject as a normal noun phrase and put its tag straight after that "
+            "noun phrase, with a space between them. H3 binds a reference to a subject only through that "
+            "inline tag. A subject with no tag loses its identity. Never fuse the tag onto a word."
+        )
+        lines.append(
+            "State once in retention_analysis that the subject keeps the same face, hair, and clothing as "
+            "its picture throughout the video."
         )
         lines.append(
             "The pictures do not fix the setting. Build the setting, the light, and the action from "
