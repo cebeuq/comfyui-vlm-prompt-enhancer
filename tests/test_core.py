@@ -19,7 +19,7 @@ from h3_modes import (
     snap_seconds,
     strip_reasoning,
 )
-from media import _sample_indices, build_messages
+from media import _sample_indices, build_messages, collect_images
 from model_config import MODEL_IDS, resolve_model_id
 
 
@@ -186,6 +186,43 @@ class H3ModeTests(unittest.TestCase):
         three = build_system_prompt("Ref2VA", 5, 3)
         self.assertIn("3 pictures are attached", three)
         self.assertIn("<Picture 3>", three)
+
+    def test_separate_slots_skip_empties_and_keep_order(self):
+        import media
+        original = media.tensor_to_pil_images
+        media.tensor_to_pil_images = lambda t, n=8: [t]
+        try:
+            a, b, c = object(), object(), object()
+            self.assertEqual(media.collect_images(None, None, None, 9, (a, None, b, None, None, c)), [a, b, c])
+            first, extra = object(), object()
+            self.assertEqual(media.collect_images(first, None, None, 9, (extra,)), [first, extra])
+        finally:
+            media.tensor_to_pil_images = original
+
+    def test_video_frames_are_declared_as_one_moving_shot(self):
+        text = build_system_prompt("Ref2VA", 8, 6, video_count=1, video_frame_count=4)
+        self.assertIn("The last 4 of those pictures, <Picture 3> to <Picture 6>", text)
+        self.assertIn("consecutive frames of one reference video, in time order", text)
+        self.assertIn("<Video 1>", text)
+
+    def test_video_frames_are_not_offered_as_subject_tags(self):
+        message = build_user_message("a cat", "Ref2VA", 6, 1, 0, 4)
+        self.assertIn("<Picture 1>", message)
+        self.assertIn("<Picture 2>", message)
+        self.assertNotIn("<Picture 3>", message)
+        self.assertIn("<Video 1>", message)
+
+    def test_empty_idea_becomes_an_explicit_instruction(self):
+        message = build_user_message("", "Ref2VA", 2)
+        self.assertIn("IDEA: none given", message)
+        self.assertIn("Build the video from the reference media alone", message)
+        self.assertNotIn("IDEA: \n", message)
+
+    def test_whitespace_only_idea_is_treated_as_empty(self):
+        self.assertIn("none given", build_user_message("   \n  ", "I2VA", 1))
+
+    def test_a_real_idea_is_still_passed_through(self):
+        self.assertIn("IDEA: a cat on a roof", build_user_message("  a cat on a roof  ", "I2VA", 1))
 
     def test_user_message_lists_available_tags(self):
         message = build_user_message("a cat", "Ref2VA", 2, 1, 1)

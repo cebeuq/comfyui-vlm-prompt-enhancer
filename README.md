@@ -139,6 +139,25 @@ toward whatever it is shown. A worked example inside a system prompt leaks its
 subject, its setting, and its wording into every later generation. Keeping the
 prompt neutral keeps the output driven by your idea and your references.
 
+### Reference slots
+
+`reference_images` takes a batch. `ref_image_1` to `ref_image_6` take one
+picture each, for graphs that wire several loaders separately. An empty slot,
+or one whose source node is bypassed, is skipped rather than counted, so
+muting a loader changes the picture count instead of breaking the run.
+
+`reference_video_frames` takes a reference video as an `IMAGE` batch and reads
+the frames as one moving shot in time order. Prefer it over `reference_video`:
+a processor's own video path is not always usable, while an ordered list of
+pictures works on every vision model.
+
+### An empty prompt
+
+The prompt may be empty when reference media is connected. The node then tells
+the model to build the video from the references alone, keeping their subject,
+setting, and look, and inventing only the movement. The node refuses only when
+there is nothing at all to work from: no prompt and no reference.
+
 `system_prompt_used` returns the exact text that was sent, so you can read what
 the model was told.
 

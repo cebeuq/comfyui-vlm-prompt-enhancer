@@ -50,18 +50,30 @@ def build_messages(system_prompt: str, prompt: str, images=None, video=None) -> 
     return messages
 
 
-def collect_images(first_frame=None, last_frame=None, reference_images=None, maximum: int = 9):
+def collect_images(
+    first_frame=None,
+    last_frame=None,
+    reference_images=None,
+    maximum: int = 9,
+    extra_images=(),
+):
     """Order the reference pictures the way MiniMax H3 numbers them.
 
     Slot order is fixed: the first-frame input becomes <Picture 1>, the
-    last-frame input becomes the next picture, and the reference batch fills
-    the remaining slots in its own order.
+    last-frame input becomes the next picture, the reference batch fills the
+    slots after that, and each separately wired picture follows in the order
+    it was given. A slot that is empty, because nothing is wired to it or
+    because its source node is bypassed, is skipped rather than counted.
     """
     output = []
-    for tensor, count in ((first_frame, 1), (last_frame, 1)):
+    for tensor in (first_frame, last_frame):
         if tensor is None:
             continue
-        output.extend(tensor_to_pil_images(tensor, count))
+        output.extend(tensor_to_pil_images(tensor, 1))
     if reference_images is not None and len(output) < maximum:
         output.extend(tensor_to_pil_images(reference_images, maximum - len(output)))
+    for tensor in extra_images:
+        if tensor is None or len(output) >= maximum:
+            continue
+        output.extend(tensor_to_pil_images(tensor, 1))
     return output[:maximum]

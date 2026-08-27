@@ -173,6 +173,13 @@ class VLMPromptEnhancer:
                 "first_frame": ("IMAGE", {"tooltip": "MiniMax H3 mode. Becomes <Picture 1>."}),
                 "last_frame": ("IMAGE", {"tooltip": "MiniMax H3 FL2V mode. Becomes <Picture 2>."}),
                 "reference_audio": ("AUDIO", {"tooltip": "MiniMax H3 mode. Marks the task as an audio-synced variant. The audio itself is not sent to the language model."}),
+                "reference_video_frames": ("IMAGE", {"tooltip": "MiniMax H3 mode. A reference video supplied as an IMAGE batch. Frames are sampled in time order and read as one moving shot. Use this instead of reference_video when the model's own video path is unavailable."}),
+                "ref_image_1": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
+                "ref_image_2": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
+                "ref_image_3": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
+                "ref_image_4": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
+                "ref_image_5": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
+                "ref_image_6": ("IMAGE", {"tooltip": "MiniMax H3 Ref2VA. One reference picture. Empty or bypassed slots are skipped."}),
             },
         }
 
@@ -285,18 +292,39 @@ class VLMPromptEnhancer:
         first_frame=None,
         last_frame=None,
         reference_audio=None,
+        reference_video_frames=None,
+        ref_image_1=None,
+        ref_image_2=None,
+        ref_image_3=None,
+        ref_image_4=None,
+        ref_image_5=None,
+        ref_image_6=None,
     ):
-        if not prompt.strip():
-            raise ValueError("prompt cannot be empty")
+        separate_images = (ref_image_1, ref_image_2, ref_image_3, ref_image_4, ref_image_5, ref_image_6)
+        has_reference = any(
+            item is not None
+            for item in (reference_images, reference_video, reference_video_frames, first_frame, last_frame)
+        ) or any(item is not None for item in separate_images)
+        if not prompt.strip() and not has_reference:
+            raise ValueError(
+                "Nothing to work from: type a prompt, or connect a reference image or video."
+            )
 
         video = video_to_array(reference_video, max_video_frames) if reference_video is not None else None
         alignment = ""
         if mode == MODE_H3:
-            images = collect_images(first_frame, last_frame, reference_images, H3_MAX_REF_IMAGES)
+            images = collect_images(
+                first_frame, last_frame, reference_images, H3_MAX_REF_IMAGES, separate_images
+            )
+            frames = []
+            if reference_video_frames is not None:
+                # A video handed over as ordered frames. Every vision model can
+                # read a list of pictures; not every one has a working video path.
+                frames = tensor_to_pil_images(reference_video_frames, max(2, int(max_video_frames)))
             has_audio = reference_audio is not None
-            video_count = 1 if video is not None else 0
+            video_count = (1 if video is not None else 0) + (1 if frames else 0)
             audio_count = 1 if has_audio else 0
-            task = resolve_task(h3_task, len(images), video is not None, has_audio)
+            task = resolve_task(h3_task, len(images), video_count > 0, has_audio)
             check_image_count(task, len(images))
             seconds = snap_seconds(h3_video_seconds)
             alignment = alignment_line(task, len(images), seconds, h3_anchor_first_reference)
@@ -306,23 +334,39 @@ class VLMPromptEnhancer:
                 ref_kinds = resolve_ref_kinds(
                     h3_ref_kind,
                     len(images),
-                    video is not None,
+                    video_count > 0,
                     has_audio,
                     first_frame is not None or last_frame is not None,
                 )
+            # The sampled frames ride along at the end of the picture list, so
+            # the model sees them in order without a video content part.
+            images = images + frames
             system_prompt = build_system_prompt(
-                task, seconds, len(images), video_count, audio_count, alignment, ref_kinds
+                task,
+                seconds,
+                len(images),
+                video_count,
+                audio_count,
+                alignment,
+                ref_kinds,
+                len(frames),
             )
-            user_message = build_user_message(prompt, task, len(images), video_count, audio_count)
+            user_message = build_user_message(
+                prompt, task, len(images), video_count, audio_count, len(frames)
+            )
             words = 500 if task == "Ref2VA" else seconds * 14
             max_new_tokens = max(int(max_new_tokens), int(words * 2.2) + 192)
         else:
             images = []
-            if first_frame is not None or last_frame is not None:
-                images = collect_images(first_frame, last_frame, reference_images)
+            if first_frame is not None or last_frame is not None or any(i is not None for i in separate_images):
+                images = collect_images(
+                    first_frame, last_frame, reference_images, H3_MAX_REF_IMAGES, separate_images
+                )
             elif reference_images is not None:
                 images = tensor_to_pil_images(reference_images)
-            user_message = prompt.strip()
+            user_message = prompt.strip() or (
+                "Describe the attached reference media, then write an improved generation prompt for it."
+            )
 
         remote_base_url = os.environ.get("VLM_PROMPT_ENHANCER_BASE_URL", "").strip()
         if remote_base_url:

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-vlm-prompt-enhancer"
-version = "0.2.0"
+version = "0.3.0"
 description = "A simple ComfyUI node that enhances prompts with local multimodal models."
 requires-python = ">=3.10"
 license = "MIT"

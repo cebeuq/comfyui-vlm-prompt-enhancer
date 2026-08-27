@@ -329,8 +329,21 @@ _NO_TAG_RULE = (
 )
 
 
-def _slot_block(task: str, image_count: int, video_count: int, audio_count: int, ref_kinds: str) -> str:
-    """Explain what each attached reference means for this task."""
+def _slot_block(
+    task: str,
+    image_count: int,
+    video_count: int,
+    audio_count: int,
+    ref_kinds: str,
+    video_frame_count: int = 0,
+) -> str:
+    """Explain what each attached reference means for this task.
+
+    ``video_frame_count`` counts pictures at the end of the attached set that
+    are consecutive frames of a reference video rather than separate subjects.
+    Passing a video as ordered frames works on every vision model; the
+    dedicated video path of a processor does not.
+    """
     lines = ["REFERENCE MEDIA."]
 
     if image_count == 1:
@@ -343,6 +356,15 @@ def _slot_block(task: str, image_count: int, video_count: int, audio_count: int,
         )
     else:
         lines.append("No picture is attached.")
+
+    if video_frame_count > 0 and image_count >= video_frame_count:
+        first = image_count - video_frame_count + 1
+        names = f"<Picture {first}>" if video_frame_count == 1 else f"<Picture {first}> to <Picture {image_count}>"
+        lines.append(
+            f"The last {video_frame_count} of those pictures, {names}, are not separate subjects. They are "
+            "consecutive frames of one reference video, in time order. Read them as one moving shot. "
+            "Refer to that shot as <Video 1>, and never refer to those frames by their picture numbers."
+        )
 
     if task == "I2VA":
         lines.append("<Picture 1> is the exact first frame of the video. The video starts inside it.")
@@ -395,6 +417,11 @@ def _slot_block(task: str, image_count: int, video_count: int, audio_count: int,
                 f"{video_count} reference video(s) are attached as {names}. You are shown their frames in "
                 "time order. Those frames are one moving shot, not separate pictures. A reference video "
                 "fixes motion, pacing, and camera work."
+            )
+            lines.append(
+                "Describe the movement, the pacing, and the camera work you can read from those frames, "
+                "and bind them with the inline tag <Video 1>. The subject that performs that movement is "
+                "the one the pictures fix, not the person in the video frames."
             )
         if audio_count:
             names = ", ".join(f"<Audio {index + 1}>" for index in range(audio_count))
@@ -531,6 +558,7 @@ def build_system_prompt(
     audio_count: int = 0,
     alignment: str = "",
     ref_kinds: str = "",
+    video_frame_count: int = 0,
 ) -> str:
     """Assemble the full system prompt for one MiniMax H3 task."""
     if task not in H3_TASKS:
@@ -540,7 +568,7 @@ def build_system_prompt(
     blocks = [
         _ROLE,
         f"TASK.\n{H3_TASK_LABELS[task]}",
-        _slot_block(task, image_count, video_count, audio_count, ref_kinds),
+        _slot_block(task, image_count, video_count, audio_count, ref_kinds, video_frame_count),
         _output_contract(schema),
         _alignment_note(alignment, schema),
         _VIEWER_RULES,
@@ -558,12 +586,27 @@ def build_system_prompt(
 
 
 def build_user_message(
-    idea: str, task: str, image_count: int, video_count: int = 0, audio_count: int = 0
+    idea: str,
+    task: str,
+    image_count: int,
+    video_count: int = 0,
+    audio_count: int = 0,
+    video_frame_count: int = 0,
 ) -> str:
     """Wrap the user's rough idea with the binding tags that are available."""
-    parts = [f"IDEA: {idea.strip()}"]
+    idea = (idea or "").strip()
+    if idea:
+        parts = [f"IDEA: {idea}"]
+    else:
+        # No idea was typed. The reference media is the whole brief, so say so
+        # plainly rather than leaving the model an empty instruction to fill.
+        parts = [
+            "IDEA: none given. Build the video from the reference media alone. "
+            "Keep the subject, the setting, and the look that the reference media shows, "
+            "and invent only the movement that suits it."
+        ]
     if task == "Ref2VA":
-        tags = [f"<Picture {index + 1}>" for index in range(image_count)]
+        tags = [f"<Picture {index + 1}>" for index in range(image_count - video_frame_count)]
         tags += [f"<Video {index + 1}>" for index in range(video_count)]
         tags += [f"<Audio {index + 1}>" for index in range(audio_count)]
         if tags:
