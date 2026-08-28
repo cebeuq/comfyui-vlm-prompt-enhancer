@@ -23,11 +23,13 @@ from .h3_modes import (
     build_user_message,
     check_image_count,
     compile_prompt,
+    extract_spoken_lines,
     field_schema,
     resolve_ref_kinds,
     resolve_task,
     snap_seconds,
     strip_reasoning,
+    wants_music,
 )
 from .media import build_messages, collect_images, tensor_to_pil_images, video_to_array
 from .model_config import MODEL_IDS, QUANTIZATIONS, resolve_model_id
@@ -329,6 +331,8 @@ class VLMPromptEnhancer:
             seconds = snap_seconds(h3_video_seconds)
             alignment = alignment_line(task, len(images), seconds, h3_anchor_first_reference)
             schema = field_schema(task)
+            spoken_lines = tuple(extract_spoken_lines(prompt))
+            allow_music = wants_music(prompt)
             ref_kinds = ""
             if task == "Ref2VA":
                 ref_kinds = resolve_ref_kinds(
@@ -350,9 +354,10 @@ class VLMPromptEnhancer:
                 alignment,
                 ref_kinds,
                 len(frames),
+                len(spoken_lines),
             )
             user_message = build_user_message(
-                prompt, task, len(images), video_count, audio_count, len(frames)
+                prompt, task, len(images), video_count, audio_count, len(frames), spoken_lines
             )
             words = 500 if task == "Ref2VA" else seconds * 14
             max_new_tokens = max(int(max_new_tokens), int(words * 2.2) + 192)
@@ -389,7 +394,7 @@ class VLMPromptEnhancer:
                 seed,
             )
             if mode == MODE_H3:
-                result = compile_prompt(result, alignment, schema)
+                result = compile_prompt(result, alignment, schema, spoken_lines, allow_music)
             return (result, system_prompt)
 
         import torch
@@ -442,7 +447,7 @@ class VLMPromptEnhancer:
                 self._unload()
 
         if mode == MODE_H3:
-            result = compile_prompt(result, alignment, schema)
+            result = compile_prompt(result, alignment, schema, spoken_lines, allow_music)
         return (result, system_prompt)
 
 

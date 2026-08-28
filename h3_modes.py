@@ -95,6 +95,60 @@ H3_MAX_REF_AUDIO = 3
 _SINGLE_SHOT_TASKS = frozenset({"I2VA", "L2VA", "FL2VA"})
 
 
+# Quotation marks people actually type, straight and curly, plus the Japanese
+# corner brackets MiniMax's own guide uses.
+_QUOTE_PAIRS = (('"', '"'), ("\u201c", "\u201d"), ("\u2018", "\u2019"), ("\u300c", "\u300d"), ("'", "'"))
+_MUSIC_WORDS = (
+    "music", "score", "soundtrack", "song", "singing", "sings", "sing", "melody",
+    "piano", "guitar", "violin", "strings", "synth", "drums", "beat", "orchestra",
+    "jazz", "lo-fi", "lofi", "ambient track", "background track", "theme tune",
+)
+
+
+def extract_spoken_lines(idea: str) -> list[str]:
+    """Return the quoted lines in an idea, in the order they were written.
+
+    Quoted text is the only reliable signal that the user wants speech. A
+    request such as "she talks about her day" describes an action; it hands
+    over no words, so nothing can be said.
+    """
+    text = idea or ""
+    found: list[str] = []
+    for opening, closing in _QUOTE_PAIRS:
+        start = 0
+        while True:
+            left = text.find(opening, start)
+            if left < 0:
+                break
+            right = text.find(closing, left + len(opening))
+            if right < 0:
+                break
+            line = text[left + len(opening):right].strip()
+            start = right + len(closing)
+            if len(line) >= 2 and line not in found:
+                found.append(line)
+    return found
+
+
+def wants_music(idea: str) -> bool:
+    """Say whether the idea actually asked for a musical score."""
+    lowered = (idea or "").lower()
+    return any(word in lowered for word in _MUSIC_WORDS)
+
+
+def speech_sentence(line: str, language: str = "English") -> str:
+    """Build one correctly shaped spoken passage for H3."""
+    words = line.strip()
+    if words and words[-1] not in ".?!":
+        words += "."
+    if words:
+        words = words[0].upper() + words[1:]
+    return (
+        "The subject's jaw and lips move clearly through every word, and the subject (S1) says: "
+        f"<d>[{language}] {words}</d> The subject closes their lips."
+    )
+
+
 def field_schema(task: str) -> tuple[str, ...]:
     """Return the field names, in order, that H3 expects for a task."""
     return _REFERENCE_FIELDS if task == "Ref2VA" else _SIMPLE_FIELDS
@@ -303,14 +357,20 @@ Any words that must appear on screen, on a sign or a title, go inside straight d
 Keep on-screen words in the language the user wrote them in. Never translate them."""
 
 _DIALOGUE_RULE = """SPEECH.
-Somebody speaks only when the idea hands you words to say, or clearly asks for speech. When the idea gives you no line, write no speech at all.
+Quoted words in the idea are lines that MUST be spoken on screen. They are not a description. You must place every one of them in the timeline, inside the wrapper below, word for word.
+Never replace a quoted line with a description such as she speaks, she talks, or she tells the viewer. A description makes the video silent, which is a failure.
+When the idea hands you no quoted words, nobody speaks: write no speech at all.
 When somebody does speak, the spoken words appear one time only, and they appear inside this wrapper: <d>[English] The words.</d>
 Copy the square brackets and the tag exactly. Change English to the language of the words when the user wrote them in another language, and never translate them.
 The words start with a capital letter and end with a full stop, a question mark, or an exclamation mark.
-Build the whole spoken passage in this shape, and replace only the capitalised parts:
-HIS OR HER jaw and lips move clearly through every word, and the SPEAKER with a VOICE QUALITY voice (S1) says: <d>[English] THE WORDS.</d> He closes his lips and ONE ACTION.
+Build the spoken passage in this order, writing every part in your own words and in ordinary sentence case:
+1. Say that the speaker's jaw and lips move clearly through every word.
+2. Name the speaker, then the quality of their voice, then the speaker tag in round brackets.
+3. Write the word says, a colon, and then the wrapper holding the exact words.
+4. Say that the speaker closes their lips.
+5. Add one small action, and only one.
 Use (S1) for the first speaker and (S2) for a second speaker, in the order they speak.
-The capitals in that shape only mark the parts you replace. Write the finished sentence in ordinary sentence case, and never copy a capitalised placeholder into your answer.
+Match the pronoun to the person you can see. Never write his or her, and never leave a description of the voice unwritten.
 Speech takes real time. Keep the spoken words short enough to be said inside the clip. Cut a line rather than let the delivery rush.
 Never summarise, hint at, or repeat the spoken words anywhere else."""
 
@@ -320,7 +380,8 @@ No person makes a vocal sound in overall_soundscape. These words are banned from
 A crowded place is still silent of people in this field. Name objects instead of people, such as cups, doors, machines, footsteps, or traffic.
 Moving air, cloth, and machines never whisper or murmur. They hiss, rush, hum, rustle, creak, or sigh.
 Never ask for silence or for clean audio. A room always has room tone.
-non_diegetic_music names instruments, tempo, and volume. Write "N/A" when the scene should carry no score."""
+non_diegetic_music is "N/A" by default. Write a score ONLY when the idea asks for music, a song, or an instrument by name. Never add music because the scene feels like it wants some. Unwanted music ruins the take.
+When the idea does ask for music, name instruments, tempo, and volume."""
 
 _NO_TAG_RULE = (
     "The binding line above your answer already ties the picture to the video. Never write a "
@@ -516,7 +577,7 @@ def budget_for(seconds) -> tuple[int, int]:
     return _BUDGET_ANCHORS[-1][1], _BUDGET_ANCHORS[-1][2]
 
 
-def _length_block(seconds, task: str) -> str:
+def _length_block(seconds, task: str, spoken_lines: int = 0) -> str:
     """Build the word and coverage budget for a duration."""
     value = snap_seconds(seconds)
     words, sentences = budget_for(value)
@@ -530,12 +591,19 @@ def _length_block(seconds, task: str) -> str:
     frames = value * H3_FPS
     covered = _COVERAGE[: sentences - 1] + (_COVERAGE[-1],)
     checklist = "; ".join(covered)
+    speech = ""
+    if spoken_lines:
+        speech = (
+            f"On top of that list, write {spoken_lines} spoken passage(s), one for each quoted line "
+            "the idea gave you, in the shape the SPEECH rule sets out. The spoken passages are "
+            "required. They do not replace any item on the list.\n"
+        )
     return f"""LENGTH.
 The video is {value} seconds long at {H3_FPS} frames per second, which is {frames} frames.
 Write about {words} words in the timeline field, and never fewer.
 {ceiling}Write at least {len(covered)} full sentences.
 Give each of these its own sentence, in this order: {checklist}.
-Keep writing until every item on that list has its own sentence. Do not stop early.
+{speech}Keep writing until every item on that list has its own sentence. Do not stop early.
 More words never means more actions. When you need more words, describe the same actions and the same place in more detail.
 Count your words before you answer."""
 
@@ -559,6 +627,7 @@ def build_system_prompt(
     alignment: str = "",
     ref_kinds: str = "",
     video_frame_count: int = 0,
+    spoken_lines: int = 0,
 ) -> str:
     """Assemble the full system prompt for one MiniMax H3 task."""
     if task not in H3_TASKS:
@@ -580,7 +649,7 @@ def build_system_prompt(
         _DIALOGUE_RULE,
         _TEXT_RULE,
         _SOUND_RULE,
-        _length_block(seconds, task),
+        _length_block(seconds, task, spoken_lines),
     ]
     return "\n\n".join(block for block in blocks if block)
 
@@ -592,6 +661,7 @@ def build_user_message(
     video_count: int = 0,
     audio_count: int = 0,
     video_frame_count: int = 0,
+    spoken_lines: tuple[str, ...] = (),
 ) -> str:
     """Wrap the user's rough idea with the binding tags that are available."""
     idea = (idea or "").strip()
@@ -605,6 +675,15 @@ def build_user_message(
             "Keep the subject, the setting, and the look that the reference media shows, "
             "and invent only the movement that suits it."
         ]
+    if spoken_lines:
+        quoted = "\n".join(f"  {index + 1}. {line}" for index, line in enumerate(spoken_lines))
+        parts.append(
+            "REQUIRED SPOKEN LINES. The idea quoted these words. Each one MUST be spoken on screen, "
+            "word for word, inside a <d> wrapper, in the shape the SPEECH rule sets out:\n"
+            f"{quoted}\n"
+            "Do not paraphrase them. Do not summarise them. Do not replace them with a description "
+            "of somebody speaking."
+        )
     if task == "Ref2VA":
         tags = [f"<Picture {index + 1}>" for index in range(image_count - video_frame_count)]
         tags += [f"<Video {index + 1}>" for index in range(video_count)]
@@ -687,6 +766,28 @@ def repair_reference_labels(text: str) -> str:
     return text
 
 
+# Wording a model copies straight out of an instruction instead of replacing.
+# H3 would read it as literal on-screen direction, so it is removed.
+_PLACEHOLDER_FIXES = (
+    (re.compile(r"\bhis or her\b", re.IGNORECASE), "the speaker's"),
+    (re.compile(r"\bwith a VOICE QUALITY voice\b"), "with a clear voice"),
+    (re.compile(r"\bVOICE QUALITY\b"), "clear"),
+    (re.compile(r"\bTHE WORDS\b"), ""),
+    (re.compile(r"\band ONE ACTION\b"), ""),
+    (re.compile(r"\bONE ACTION\b"), ""),
+    (re.compile(r"\bA PLAIN DESCRIPTION OF THAT SUBJECT\b"), ""),
+    (re.compile(r"\bSPEAKER\b"), "the speaker"),
+)
+
+
+def scrub_placeholders(text: str) -> str:
+    """Remove instruction placeholders a model copied verbatim."""
+    for pattern, replacement in _PLACEHOLDER_FIXES:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"\s+([.,;:])", r"\1", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
 def _strip_fences(text: str) -> str:
     lines = [line for line in text.splitlines() if not line.strip().startswith("```")]
     return "\n".join(lines).strip()
@@ -716,7 +817,80 @@ def parse_fields(text: str, schema: tuple[str, ...] = _SIMPLE_FIELDS) -> dict[st
     return {key: " ".join(value).strip() for key, value in fields.items() if " ".join(value).strip()}
 
 
-def compile_prompt(raw: str, alignment: str = "", schema: tuple[str, ...] = _SIMPLE_FIELDS) -> str:
+_D_BLOCK = re.compile(r"<d>(.*?)</d>", re.DOTALL | re.IGNORECASE)
+_D_ANY = re.compile(r"</?d>", re.IGNORECASE)
+_LANG_PREFIX = re.compile(r"^\s*\[[A-Za-z ]+\]")
+# A spoken line is a line. Anything longer than this is the model having run
+# the rest of the timeline into an unclosed wrapper.
+_MAX_SPOKEN_CHARS = 300
+
+
+def strip_broken_wrappers(body: str) -> str:
+    """Remove every <d> marker when the wrappers cannot be trusted.
+
+    An unclosed <d>, or one holding a whole paragraph, would otherwise pair
+    with the next closing tag and swallow the timeline. Clearing the markers
+    lets the required lines be put back cleanly.
+    """
+    opens = len(re.findall(r"<d>", body, re.IGNORECASE))
+    closes = len(re.findall(r"</d>", body, re.IGNORECASE))
+    oversized = any(len(m) > _MAX_SPOKEN_CHARS for m in _D_BLOCK.findall(body))
+    if opens != closes or oversized:
+        return _D_ANY.sub("", body)
+    return body
+
+
+def _signature(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+
+def normalise_speech_blocks(body: str, spoken_lines: tuple[str, ...] = (), language: str = "English") -> str:
+    """Make every <d> wrapper hold the spoken words and nothing else.
+
+    H3 reads the wrapper as the literal line to say. A model often stuffs the
+    speaker, the voice, and the speaker tag inside it, or drops the language
+    tag. Either way the take comes out wrong, so the wrapper is rebuilt.
+    """
+    known = {_signature(line): line for line in spoken_lines}
+
+    def rebuild(match):
+        content = match.group(1).strip()
+        signature = _signature(content)
+        for sig, line in known.items():
+            if sig and sig in signature:
+                words = line.strip().strip('"\u201c\u201d\u2018\u2019')
+                if words and words[-1] not in ".?!":
+                    words += "."
+                if words:
+                    words = words[0].upper() + words[1:]
+                return f"<d>[{language}] {words}</d>"
+        # An unrecognised line still needs its language tag and clean edges.
+        cleaned = content.strip().strip('"\u201c\u201d\u2018\u2019').strip()
+        if not _LANG_PREFIX.match(cleaned):
+            cleaned = f"[{language}] {cleaned}"
+        return f"<d>{cleaned}</d>"
+
+    return _D_BLOCK.sub(rebuild, body)
+
+
+def _has_spoken(body: str, line: str) -> bool:
+    """Say whether a quoted line already sits inside a <d> wrapper."""
+    needle = re.sub(r"[^a-z0-9]+", "", line.lower())
+    if not needle:
+        return True
+    for block in re.findall(r"<d>(.*?)</d>", body, flags=re.DOTALL | re.IGNORECASE):
+        if needle in re.sub(r"[^a-z0-9]+", "", block.lower()):
+            return True
+    return False
+
+
+def compile_prompt(
+    raw: str,
+    alignment: str = "",
+    schema: tuple[str, ...] = _SIMPLE_FIELDS,
+    spoken_lines: tuple[str, ...] = (),
+    allow_music: bool = True,
+) -> str:
     """Repair a model answer into the exact layout H3 expects."""
     body_field = _body_field(schema)
     fields = parse_fields(raw or "", schema)
@@ -731,7 +905,7 @@ def compile_prompt(raw: str, alignment: str = "", schema: tuple[str, ...] = _SIM
 
     reference_schema = "subject_definitions" in schema
     for key, value in list(fields.items()):
-        value = scrub_hedges(value)
+        value = scrub_placeholders(scrub_hedges(value))
         if reference_schema:
             value = repair_reference_labels(value)
         fields[key] = value
@@ -739,8 +913,26 @@ def compile_prompt(raw: str, alignment: str = "", schema: tuple[str, ...] = _SIM
     body = fields.get(body_field, "").strip()
     if body and "[shot 1]" not in body.lower():
         body = f"[Shot 1] {body}"
+
+    # Rebuild every wrapper before checking, so a line buried inside a
+    # malformed wrapper counts as spoken and is not added a second time.
+    if body:
+        body = strip_broken_wrappers(body)
+        body = normalise_speech_blocks(body, spoken_lines)
+
+    # A small model often narrates that somebody speaks instead of quoting the
+    # words. H3 then generates a silent take. Put any dropped line back.
+    for line in spoken_lines:
+        if body and not _has_spoken(body, line):
+            body = f"{body.rstrip()} {speech_sentence(line)}"
+
     if body:
         fields[body_field] = body
+
+    # Music arrives only on request. An invented score cannot be removed from
+    # a finished generation.
+    if not allow_music:
+        fields["non_diegetic_music"] = "N/A"
 
     def assemble(values: dict[str, str]) -> str:
         parts = [alignment] if alignment else []

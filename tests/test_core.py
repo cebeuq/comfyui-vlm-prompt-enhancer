@@ -11,13 +11,19 @@ from h3_modes import (
     check_image_count,
     compile_prompt,
     detect_task,
+    extract_spoken_lines,
     field_schema,
+    normalise_speech_blocks,
+    strip_broken_wrappers,
     resolve_ref_kinds,
     resolve_task,
     repair_reference_labels,
     scrub_hedges,
+    scrub_placeholders,
     snap_seconds,
+    speech_sentence,
     strip_reasoning,
+    wants_music,
 )
 from media import _sample_indices, build_messages, collect_images
 from model_config import MODEL_IDS, resolve_model_id
@@ -223,6 +229,137 @@ class H3ModeTests(unittest.TestCase):
 
     def test_a_real_idea_is_still_passed_through(self):
         self.assertIn("IDEA: a cat on a roof", build_user_message("  a cat on a roof  ", "I2VA", 1))
+
+    def test_quoted_lines_are_extracted_in_order(self):
+        idea = 'she says "hello there" then later she says \u201cgoodbye now\u201d'
+        self.assertEqual(extract_spoken_lines(idea), ["hello there", "goodbye now"])
+
+    def test_unquoted_speech_yields_no_lines(self):
+        self.assertEqual(extract_spoken_lines("she talks about her day to the camera"), [])
+        self.assertEqual(extract_spoken_lines(""), [])
+
+    def test_required_lines_are_stated_in_the_user_message(self):
+        message = build_user_message("say it", "Ref2VA", 1, spoken_lines=("the quick brown fox",))
+        self.assertIn("REQUIRED SPOKEN LINES", message)
+        self.assertIn("1. the quick brown fox", message)
+        self.assertIn("word for word", message)
+
+    def test_speech_rule_is_mandatory_when_lines_exist(self):
+        text = build_system_prompt("Ref2VA", 8, 1, spoken_lines=2)
+        self.assertIn("MUST be spoken on screen", text)
+        self.assertIn("write 2 spoken passage(s)", text)
+
+    def test_dropped_spoken_line_is_put_back(self):
+        raw = (
+            "integrated_multimodal_description: [Shot 1] She smiles and speaks to the camera.\n\n"
+            "overall_soundscape: room tone\n\n"
+            "non_diegetic_music: N/A"
+        )
+        out = compile_prompt(raw, "", spoken_lines=("the quick brown fox jumped over the lazy dog",))
+        self.assertIn("<d>[English] The quick brown fox jumped over the lazy dog.</d>", out)
+
+    def test_a_line_the_model_already_spoke_is_not_duplicated(self):
+        raw = (
+            "integrated_multimodal_description: [Shot 1] She says: "
+            "<d>[English] The quick brown fox jumped over the lazy dog.</d> She closes her lips.\n\n"
+            "overall_soundscape: room tone\n\nnon_diegetic_music: N/A"
+        )
+        out = compile_prompt(raw, "", spoken_lines=("the quick brown fox jumped over the lazy dog",))
+        self.assertEqual(out.count("<d>"), 1)
+
+    def test_music_is_forced_off_unless_asked_for(self):
+        raw = (
+            "integrated_multimodal_description: [Shot 1] A room.\n\n"
+            "overall_soundscape: room tone\n\n"
+            "non_diegetic_music: soft piano, slow tempo"
+        )
+        self.assertIn("non_diegetic_music: N/A", compile_prompt(raw, "", allow_music=False))
+        self.assertIn("soft piano", compile_prompt(raw, "", allow_music=True))
+
+    def test_music_intent_is_read_from_the_idea(self):
+        self.assertFalse(wants_music("she poses and talks to the camera"))
+        self.assertTrue(wants_music("add soft piano music"))
+        self.assertTrue(wants_music("she sings a song"))
+
+    def test_speech_sentence_shape(self):
+        out = speech_sentence("hello there")
+        self.assertIn("<d>[English] Hello there.</d>", out)
+        self.assertIn("jaw and lips move clearly", out)
+        self.assertTrue(out.endswith("closes their lips."))
+
+    def test_leaked_placeholders_are_scrubbed(self):
+        raw = (
+            "integrated_multimodal_description: [Shot 1] His or her jaw and lips move clearly, and "
+            "<Subject 1> with a VOICE QUALITY voice (S1) says: <d>[English] Hi.</d> She closes her "
+            "lips and ONE ACTION.\n\noverall_soundscape: room tone\n\nnon_diegetic_music: N/A"
+        )
+        out = compile_prompt(raw, "")
+        self.assertNotIn("VOICE QUALITY", out)
+        self.assertNotIn("ONE ACTION", out)
+        self.assertNotIn("His or her", out)
+        self.assertIn("the speaker's jaw and lips", out)
+        self.assertIn("with a clear voice (S1)", out)
+
+    def test_scrub_leaves_ordinary_text_alone(self):
+        text = "She speaks with a warm voice and closes her lips."
+        self.assertEqual(scrub_placeholders(text), text)
+
+    def test_dialogue_rule_carries_no_copyable_placeholder(self):
+        text = build_system_prompt("Ref2VA", 8, 1, spoken_lines=1)
+        for leak in ("HIS OR HER", "VOICE QUALITY", "THE WORDS", "ONE ACTION"):
+            self.assertNotIn(leak, text, leak)
+
+    def test_wrapper_holding_attribution_is_rebuilt(self):
+        body = ('[Shot 1] She poses. <d>[English] <Subject 1>, cheerful, (S1): says: '
+                '"the quick brown fox jumped over the lazy dog."</d> She waits.')
+        out = normalise_speech_blocks(body, ("the quick brown fox jumped over the lazy dog",))
+        self.assertIn("<d>[English] The quick brown fox jumped over the lazy dog.</d>", out)
+        self.assertNotIn("(S1): says:", out)
+        self.assertIn("She waits.", out)
+
+    def test_missing_language_tag_is_added(self):
+        body = "[Shot 1] <d>the quick brown fox jumped over the lazy dog.</d>"
+        out = normalise_speech_blocks(body, ("the quick brown fox jumped over the lazy dog",))
+        self.assertIn("<d>[English] The quick brown fox jumped over the lazy dog.</d>", out)
+
+    def test_unknown_line_keeps_its_words_and_gains_a_tag(self):
+        out = normalise_speech_blocks("<d>something else entirely</d>", ())
+        self.assertEqual(out, "<d>[English] something else entirely</d>")
+
+    def test_correct_wrapper_is_left_alone(self):
+        body = "<d>[English] Hello there.</d>"
+        self.assertEqual(normalise_speech_blocks(body, ("Hello there",)), body)
+
+    def test_compile_normalises_and_does_not_duplicate(self):
+        raw = ('integrated_multimodal_description: [Shot 1] She poses. '
+               '<d>[English] <Subject 1> (S1): says: "the quick brown fox jumped over the lazy dog."</d>'
+               '\n\noverall_soundscape: room tone\n\nnon_diegetic_music: N/A')
+        out = compile_prompt(raw, "", spoken_lines=("the quick brown fox jumped over the lazy dog",))
+        self.assertEqual(out.count("<d>"), 1)
+        self.assertIn("<d>[English] The quick brown fox jumped over the lazy dog.</d>", out)
+
+    def test_unclosed_wrapper_is_cleared(self):
+        body = "[Shot 1] She poses. <d>[English] She says the line. Then more timeline text."
+        self.assertNotIn("<d>", strip_broken_wrappers(body))
+        self.assertIn("She poses.", strip_broken_wrappers(body))
+
+    def test_oversized_wrapper_is_cleared(self):
+        body = "<d>[English] " + ("word " * 120) + "</d>"
+        self.assertNotIn("<d>", strip_broken_wrappers(body))
+
+    def test_balanced_short_wrapper_survives(self):
+        body = "[Shot 1] <d>[English] Hello there.</d> She waits."
+        self.assertEqual(strip_broken_wrappers(body), body)
+
+    def test_compile_recovers_from_an_unclosed_wrapper(self):
+        raw = ("integrated_multimodal_description: [Shot 1] She poses. <d>[English] she says "
+               "the quick brown fox jumped over the lazy dog and then keeps going forever\n\n"
+               "overall_soundscape: room tone\n\nnon_diegetic_music: N/A")
+        out = compile_prompt(raw, "", spoken_lines=("the quick brown fox jumped over the lazy dog",))
+        self.assertEqual(out.count("<d>"), 1)
+        self.assertEqual(out.count("</d>"), 1)
+        self.assertIn("<d>[English] The quick brown fox jumped over the lazy dog.</d>", out)
+        self.assertIn("overall_soundscape: room tone", out)
 
     def test_user_message_lists_available_tags(self):
         message = build_user_message("a cat", "Ref2VA", 2, 1, 1)

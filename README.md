@@ -151,6 +151,24 @@ the frames as one moving shot in time order. Prefer it over `reference_video`:
 a processor's own video path is not always usable, while an ordered list of
 pictures works on every vision model.
 
+### Speech and music
+
+Quoted words in your prompt are treated as lines that must be spoken on
+screen. The node reads them out of the prompt itself, tells the model they are
+required, and then checks the answer. If the model narrated the speech instead
+of quoting it, dropped the language tag, packed the speaker's name inside the
+wrapper, or left a wrapper unclosed, the node repairs the wrapper so H3
+receives `<d>[English] The exact line.</d>` and nothing else. A line the model
+already spoke correctly is left alone and never doubled.
+
+Straight quotes, curly quotes, and corner brackets all count. Speech with no
+quoted words is only a description, so nothing is said: write the words you
+want spoken inside quotation marks.
+
+`non_diegetic_music` is `N/A` unless your prompt actually asks for music, a
+song, or a named instrument. A score cannot be removed from a finished
+generation, so it is never added on the model's initiative.
+
 ### An empty prompt
 
 The prompt may be empty when reference media is connected. The node then tells
